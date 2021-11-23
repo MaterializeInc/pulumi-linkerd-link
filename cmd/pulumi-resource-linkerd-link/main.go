@@ -15,10 +15,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
+	"os"
+	"os/exec"
 
 	pbempty "github.com/golang/protobuf/ptypes/empty"
 	multiclustercmd "github.com/linkerd/linkerd2/multicluster/cmd"
@@ -27,12 +30,33 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 	rpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // Injected by linker in release builds.
 var version string
 
+var linkerdInvocationArg = "--internal-only-invoke-linkerd-cli"
+
 func main() {
+	// Cursed code alert: Since linkerd's only public interface
+	// for creating a multicluster link is currently to run the
+	// CLI, and we don't want to require users to install the
+	// linkerd binary (at least I don't), and linkerd doesn't
+	// allow overriding its Stdout, here's what we do:
+	//
+	// When this program is invoked with
+	// --internal-only-invoke-linkerd-cli, it acts as a "linkerd
+	// multicluster" binary. Otherwise, it is a real pulumi
+	// provider.
+	//
+	// TODO: Use real data structures when https://github.com/linkerd/linkerd2/pull/7335/files lands.
+	if len(os.Args) > 1 && os.Args[1] == linkerdInvocationArg {
+		if err := runMulticlusterLinkAsChild(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	err := provider.Main("linkerd-link", func(host *provider.HostClient) (rpc.ResourceProviderServer, error) {
 		return &linkerdLinkProvider{
 			host: host,
@@ -85,9 +109,38 @@ func (k *linkerdLinkProvider) Diff(ctx context.Context, req *rpc.DiffRequest) (*
 		return nil, fmt.Errorf("Unknown resource type '%s'", ty)
 	}
 
-	// TODO: Do work here.
+	olds, err := plugin.UnmarshalProperties(req.GetOlds(), plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
+	if err != nil {
+		return nil, err
+	}
+	delete(olds, "repoDigest")
 
-	return &rpc.DiffResponse{}, nil
+	news, err := plugin.UnmarshalProperties(req.GetNews(), plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
+	if err != nil {
+		return nil, err
+	}
+	d := olds.Diff(news)
+	if d == nil {
+		return &rpc.DiffResponse{
+			Changes: rpc.DiffResponse_DIFF_NONE,
+		}, nil
+	}
+
+	diff := map[string]*rpc.PropertyDiff{}
+	for key := range d.Adds {
+		diff[string(key)] = &rpc.PropertyDiff{Kind: rpc.PropertyDiff_ADD}
+	}
+	for key := range d.Deletes {
+		diff[string(key)] = &rpc.PropertyDiff{Kind: rpc.PropertyDiff_DELETE}
+	}
+	for key := range d.Updates {
+		diff[string(key)] = &rpc.PropertyDiff{Kind: rpc.PropertyDiff_UPDATE}
+	}
+	return &rpc.DiffResponse{
+		Changes:         rpc.DiffResponse_DIFF_SOME,
+		DetailedDiff:    diff,
+		HasDetailedDiff: true,
+	}, nil
 }
 
 func (k *linkerdLinkProvider) Create(ctx context.Context, req *rpc.CreateRequest) (*rpc.CreateResponse, error) {
@@ -98,24 +151,14 @@ func (k *linkerdLinkProvider) Create(ctx context.Context, req *rpc.CreateRequest
 	}
 
 	props := req.GetProperties()
-	inputs, err := plugin.UnmarshalProperties(props, plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
-
-	config, err := runMulticlusterLink([]string{
-		"--context",
-		inputs["from_cluster_kubeconfig"].StringValue(),
-		"link",
-		"--cluster-name",
-		inputs["from_cluster_name"].StringValue(),
-	})
+	outputProperties, err := linkOtherCluster(props)
 	if err != nil {
 		return nil, err
 	}
-	plugin.MarshalProperties(
-		resource.NewPropertyMapFromMap(map[string]interface{}{"config_group_yaml": config}),
-		plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true},
-	)
-
-	return &rpc.CreateResponse{}, nil
+	return &rpc.CreateResponse{
+		Id:         "ignored",
+		Properties: outputProperties,
+	}, nil
 }
 
 func (k *linkerdLinkProvider) Read(ctx context.Context, req *rpc.ReadRequest) (*rpc.ReadResponse, error) {
@@ -137,9 +180,14 @@ func (k *linkerdLinkProvider) Update(ctx context.Context, req *rpc.UpdateRequest
 		return nil, fmt.Errorf("Unknown resource type '%s'", ty)
 	}
 
-	// TODO: do work here.
-
-	return &rpc.UpdateResponse{}, nil
+	props := req.GetNews()
+	outputProperties, err := linkOtherCluster(props)
+	if err != nil {
+		return nil, err
+	}
+	return &rpc.UpdateResponse{
+		Properties: outputProperties,
+	}, nil
 }
 
 func (k *linkerdLinkProvider) Delete(ctx context.Context, req *rpc.DeleteRequest) (*pbempty.Empty, error) {
@@ -172,18 +220,80 @@ func (k *linkerdLinkProvider) Cancel(context.Context, *pbempty.Empty) (*pbempty.
 	return &pbempty.Empty{}, nil
 }
 
+// runMulticlusterLink runs this provider as a program that emulates
+// "linkerd multicluster", reading its output and reporting it as an
+// output property.
 func runMulticlusterLink(args []string) (string, error) {
-	cmd := multiclustercmd.NewCmdMulticluster()
-	cmd.SetArgs(args)
-	b := bytes.NewBufferString("")
-	cmd.SetOut(b)
-	err := cmd.Execute()
+	a := []string{linkerdInvocationArg}
+	a = append(a, args...)
+	cmd := exec.Command(os.Args[0], a...)
+	p, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("setting up subprocess stdout as a pipe: %v", err)
 	}
-	out, err := ioutil.ReadAll(b)
+	errP, err := cmd.StderrPipe()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("setting up subprocess stderr as a pipe: %v", err)
+	}
+	err = cmd.Start()
+	if err != nil {
+		return "", fmt.Errorf("re-exec'ing self: %v", err)
+	}
+	out, err := ioutil.ReadAll(p)
+	if err != nil {
+		return "", fmt.Errorf("reading linkerd multicluster output: %v", err)
+	}
+	err = cmd.Wait()
+	if err != nil {
+		stderr, _ := ioutil.ReadAll(errP)
+		return "", fmt.Errorf("running linkerd multicluster as a subcommand: %v; %v", err, string(stderr))
 	}
 	return string(out), nil
+}
+
+func runMulticlusterLinkAsChild(args []string) error {
+	cmd := multiclustercmd.NewCmdMulticluster()
+	cmd.SetArgs(args)
+	cmd.SetOut(os.Stderr)
+	return cmd.Execute()
+}
+
+func linkOtherCluster(props *structpb.Struct) (*structpb.Struct, error) {
+	inputs, err := plugin.UnmarshalProperties(props, plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
+
+	kubeconfigPath := ""
+	kubecfgRaw := inputs["from_cluster_kubeconfig"]
+	if kubecfgRaw.IsString() {
+		kubecfgRaw.StringValue()
+	} else {
+		values := kubecfgRaw.ObjectValue().MapRepl(func(in string) (string, bool) {
+			return in, true
+		}, func(pv resource.PropertyValue) (interface{}, bool) {
+			return pv, true
+		})
+		f, err := os.CreateTemp("", "kubeconfig")
+		if err != nil {
+			return nil, err
+		}
+		defer os.Remove(f.Name())
+		kubeconfigPath = f.Name()
+		enc := json.NewEncoder(f)
+		if err = enc.Encode(values); err != nil {
+			return nil, err
+		}
+	}
+	config, err := runMulticlusterLink([]string{
+		"--kubeconfig",
+		kubeconfigPath,
+		"link",
+		"--cluster-name",
+		inputs["from_cluster_name"].StringValue(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return plugin.MarshalProperties(
+		resource.NewPropertyMapFromMap(map[string]interface{}{"config_group_yaml": config}),
+		plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true},
+	)
 }

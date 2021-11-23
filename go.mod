@@ -14,4 +14,5 @@ require (
 	github.com/pulumi/pulumi/sdk/v3 v3.0.0
 	github.com/uber/jaeger-client-go v2.25.0+incompatible // indirect
 	golang.org/x/crypto v0.0.0-20210322153248-0c34fe9e7dc2 // indirect
+	google.golang.org/protobuf v1.27.1
 )

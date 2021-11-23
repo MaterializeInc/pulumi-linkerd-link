@@ -15,12 +15,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io/ioutil"
 
 	pbempty "github.com/golang/protobuf/ptypes/empty"
+	multiclustercmd "github.com/linkerd/linkerd2/multicluster/cmd"
 	"github.com/pulumi/pulumi/pkg/v3/resource/provider"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
 	rpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 )
@@ -93,7 +97,23 @@ func (k *linkerdLinkProvider) Create(ctx context.Context, req *rpc.CreateRequest
 		return nil, fmt.Errorf("Unknown resource type '%s'", ty)
 	}
 
-	// TODO: Do work here.
+	props := req.GetProperties()
+	inputs, err := plugin.UnmarshalProperties(props, plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
+
+	config, err := runMulticlusterLink([]string{
+		"--context",
+		inputs["from_cluster_kubeconfig"].StringValue(),
+		"link",
+		"--cluster-name",
+		inputs["from_cluster_name"].StringValue(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	plugin.MarshalProperties(
+		resource.NewPropertyMapFromMap(map[string]interface{}{"config_group_yaml": config}),
+		plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true},
+	)
 
 	return &rpc.CreateResponse{}, nil
 }
@@ -125,7 +145,7 @@ func (k *linkerdLinkProvider) Update(ctx context.Context, req *rpc.UpdateRequest
 func (k *linkerdLinkProvider) Delete(ctx context.Context, req *rpc.DeleteRequest) (*pbempty.Empty, error) {
 	urn := resource.URN(req.GetUrn())
 	ty := urn.Type()
-	if ty != "linkerd-link:index:Image" {
+	if ty != "linkerd-link:index:Link" {
 		return nil, fmt.Errorf("Unknown resource type '%s'", ty)
 	}
 
@@ -150,4 +170,20 @@ func (k *linkerdLinkProvider) GetSchema(ctx context.Context, req *rpc.GetSchemaR
 
 func (k *linkerdLinkProvider) Cancel(context.Context, *pbempty.Empty) (*pbempty.Empty, error) {
 	return &pbempty.Empty{}, nil
+}
+
+func runMulticlusterLink(args []string) (string, error) {
+	cmd := multiclustercmd.NewCmdMulticluster()
+	cmd.SetArgs(args)
+	b := bytes.NewBufferString("")
+	cmd.SetOut(b)
+	err := cmd.Execute()
+	if err != nil {
+		return "", err
+	}
+	out, err := ioutil.ReadAll(b)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }

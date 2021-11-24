@@ -56,7 +56,7 @@ func main() {
 	//
 	// TODO: Use real data structures when https://github.com/linkerd/linkerd2/pull/7335/files lands.
 	if len(os.Args) > 1 && os.Args[1] == linkerdInvocationArg {
-		if err := runMulticlusterLinkAsChild(os.Args[2:]); err != nil {
+		if err := runMulticlusterAsChild(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -253,10 +253,10 @@ func (k *linkerdLinkProvider) Cancel(context.Context, *pbempty.Empty) (*pbempty.
 	return &pbempty.Empty{}, nil
 }
 
-// runMulticlusterLink runs this provider as a program that emulates
+// runMulticluster runs this provider as a program that emulates
 // "linkerd multicluster", reading its output and reporting it as an
 // output property.
-func runMulticlusterLink(args []string) (string, error) {
+func runMulticluster(args []string) (string, error) {
 	a := []string{linkerdInvocationArg}
 	a = append(a, args...)
 	cmd := exec.Command(os.Args[0], a...)
@@ -284,7 +284,7 @@ func runMulticlusterLink(args []string) (string, error) {
 	return string(out), nil
 }
 
-func runMulticlusterLinkAsChild(args []string) error {
+func runMulticlusterAsChild(args []string) error {
 	cmd := multiclustercmd.NewCmdMulticluster()
 	os.Setenv("LINKERD_CONTAINER_VERSION_OVERRIDE", linkerdVersion)
 	cmd.SetArgs(args)
@@ -330,7 +330,7 @@ func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource
 	defer os.Remove(f.Name())
 
 	clusterName := inputs["from_cluster_name"].StringValue()
-	config, err := runMulticlusterLink([]string{
+	config, err := runMulticluster([]string{
 		"--kubeconfig",
 		f.Name(),
 		"link",
@@ -379,7 +379,18 @@ func (k *linkerdLinkProvider) unlinkOtherCluster(ctx context.Context, urn resour
 	f, err := writeKubeConfig(kubeconfigStr)
 	defer os.Remove(f.Name())
 
-	config := inputs["config_group_yaml"].StringValue()
+	clusterName := inputs["from_cluster_name"].StringValue()
+	config, err := runMulticluster([]string{
+		"--kubeconfig",
+		f.Name(), // counter-intuitively, here we need the *destination* kubecfg.
+		"unlink",
+		"--cluster-name",
+		clusterName,
+	})
+	if err != nil {
+		return fmt.Errorf("creating link kubernetes config: %v", err)
+	}
+
 	kc := exec.Command("kubectl", "--kubeconfig", f.Name(), "delete", "-f", "-")
 	kc.Stdin = bytes.NewBuffer([]byte(config))
 	kc.Stdout = &logWriter{ctx, k.host, urn, diag.Info}

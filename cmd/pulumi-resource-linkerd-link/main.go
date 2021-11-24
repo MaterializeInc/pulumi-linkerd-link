@@ -38,7 +38,7 @@ import (
 // Injected by linker in release builds.
 var version string
 
-var linkerdVersion = "2.11.1"
+var linkerdVersion = "stable-2.11.1"
 
 var linkerdInvocationArg = "--internal-only-invoke-linkerd-cli"
 
@@ -286,7 +286,6 @@ func runMulticluster(args []string) (string, error) {
 
 func runMulticlusterAsChild(args []string) error {
 	cmd := multiclustercmd.NewCmdMulticluster()
-	os.Setenv("LINKERD_CONTAINER_VERSION_OVERRIDE", linkerdVersion)
 	cmd.SetArgs(args)
 	cmd.SetOut(os.Stderr)
 	return cmd.Execute()
@@ -336,6 +335,8 @@ func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource
 		"link",
 		"--cluster-name",
 		clusterName,
+		"--control-plane-version",
+		linkerdVersion,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating link kubernetes config: %v", err)

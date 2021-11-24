@@ -289,17 +289,27 @@ func runMulticlusterAsChild(args []string) error {
 }
 
 func normalizeKubecfg(raw resource.PropertyValue) ([]byte, error) {
-	if raw.IsString() {
-		return []byte(raw.StringValue()), nil
-	} else if raw.IsObject() {
-		values := raw.ObjectValue().Mappable()
-		val, err := json.Marshal(values)
-		if err != nil {
-			return nil, fmt.Errorf("could not marshal kubecfg: %v", err)
-		}
-		return val, nil
+	if !raw.IsString() && !raw.IsObject() {
+		return nil, fmt.Errorf("kubeconfig must be either a structure or a string, got: %v", raw.TypeString())
 	}
-	return nil, fmt.Errorf("kubeconfig must be either a structure or a string, got: %v", raw.TypeString())
+
+	var config map[string]interface{}
+	if raw.IsString() {
+		// kubeconfig is documented to be either a string
+		// containing json-serialized data, or a file path: We
+		// forbid file paths.
+		err := json.Unmarshal([]byte(raw.StringValue()), &config)
+		if err != nil {
+			return nil, fmt.Errorf("could not deserialize string-typed kubeconfig: %v", err)
+		}
+	} else if raw.IsObject() {
+		config = raw.ObjectValue().Mappable()
+	}
+	val, err := json.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("could not marshal object-typed kubecfg: %v", err)
+	}
+	return val, nil
 }
 
 func writeKubeConfig(kubeconfigStr []byte) (*os.File, error) {

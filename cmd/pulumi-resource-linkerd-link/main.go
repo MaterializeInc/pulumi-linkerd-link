@@ -27,6 +27,7 @@ import (
 	pbempty "github.com/golang/protobuf/ptypes/empty"
 	multiclustercmd "github.com/linkerd/linkerd2/multicluster/cmd"
 	"github.com/pulumi/pulumi/pkg/v3/resource/provider"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/diag"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource/plugin"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/cmdutil"
@@ -117,7 +118,11 @@ func (k *linkerdLinkProvider) Diff(ctx context.Context, req *rpc.DiffRequest) (*
 	delete(olds, "config_group_yaml")
 	oldKubecfg, err := normalizeKubecfg(olds["from_cluster_kubeconfig"])
 	if err != nil {
-		return nil, fmt.Errorf("old kubeconfig is invalid: %v", err)
+		return nil, fmt.Errorf("old from_cluster_kubeconfig is invalid: %v", err)
+	}
+	oldToKubecfg, err := normalizeKubecfg(olds["to_cluster_kubeconfig"])
+	if err != nil {
+		return nil, fmt.Errorf("old to_cluster_kubeconfig is invalid: %v", err)
 	}
 
 	news, err := plugin.UnmarshalProperties(req.GetNews(), plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
@@ -126,11 +131,19 @@ func (k *linkerdLinkProvider) Diff(ctx context.Context, req *rpc.DiffRequest) (*
 	}
 	newKubecfg, err := normalizeKubecfg(news["from_cluster_kubeconfig"])
 	if err != nil {
-		return nil, fmt.Errorf("new kubeconfig is invalid: %v", err)
+		return nil, fmt.Errorf("new from_cluster_kubeconfig is invalid: %v", err)
+	}
+	newToKubecfg, err := normalizeKubecfg(news["to_cluster_kubeconfig"])
+	if err != nil {
+		return nil, fmt.Errorf("new to_cluster_kubeconfig is invalid: %v", err)
 	}
 	if bytes.Compare(oldKubecfg, newKubecfg) == 0 {
 		delete(olds, "from_cluster_kubeconfig")
 		delete(news, "from_cluster_kubeconfig")
+	}
+	if bytes.Compare(oldToKubecfg, newToKubecfg) == 0 {
+		delete(olds, "to_cluster_kubeconfig")
+		delete(news, "to_cluster_kubeconfig")
 	}
 
 	d := olds.Diff(news)
@@ -193,6 +206,11 @@ func (k *linkerdLinkProvider) Update(ctx context.Context, req *rpc.UpdateRequest
 	if ty != "linkerd-link:index:Link" {
 		return nil, fmt.Errorf("Unknown resource type '%s'", ty)
 	}
+	old := req.GetOlds()
+	err := k.unlinkOtherCluster(ctx, urn, old)
+	if err != nil {
+		return nil, fmt.Errorf("could not remove old resources: %v", err)
+	}
 
 	props := req.GetNews()
 	outputProperties, err := k.linkOtherCluster(ctx, urn, props)
@@ -211,9 +229,8 @@ func (k *linkerdLinkProvider) Delete(ctx context.Context, req *rpc.DeleteRequest
 		return nil, fmt.Errorf("Unknown resource type '%s'", ty)
 	}
 
-	// TODO: do work here? (I don't think we need to.)
-
-	return &pbempty.Empty{}, nil
+	props := req.GetProperties()
+	return &pbempty.Empty{}, k.unlinkOtherCluster(ctx, urn, props)
 }
 
 func (k *linkerdLinkProvider) Construct(_ context.Context, _ *rpc.ConstructRequest) (*rpc.ConstructResponse, error) {
@@ -286,24 +303,28 @@ func normalizeKubecfg(raw resource.PropertyValue) ([]byte, error) {
 	return nil, fmt.Errorf("kubeconfig must be either a structure or a string, got: %v", raw.TypeString())
 }
 
-func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource.URN, props *structpb.Struct) (*structpb.Struct, error) {
-	inputs, err := plugin.UnmarshalProperties(props, plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
-
-	kubecfgRaw := inputs["from_cluster_kubeconfig"]
-	kubeconfigStr, err := normalizeKubecfg(kubecfgRaw)
-	if err != nil {
-		return nil, err
-	}
+func writeKubeConfig(kubeconfigStr []byte) (*os.File, error) {
 	f, err := os.CreateTemp("", "kubeconfig")
 	if err != nil {
 		return nil, fmt.Errorf("opening temporary kubeconfig: %v", err)
 	}
-	defer os.Remove(f.Name())
 	f.Write(kubeconfigStr)
 	err = f.Close()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("closing temp file: %v", err)
 	}
+	return f, nil
+}
+
+func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource.URN, props *structpb.Struct) (*structpb.Struct, error) {
+	inputs, err := plugin.UnmarshalProperties(props, plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
+
+	kubeconfigStr, err := normalizeKubecfg(inputs["from_cluster_kubeconfig"])
+	if err != nil {
+		return nil, fmt.Errorf("couldn't normalize kubeconfig: %v", err)
+	}
+	f, err := writeKubeConfig(kubeconfigStr)
+	defer os.Remove(f.Name())
 
 	clusterName := inputs["from_cluster_name"].StringValue()
 	config, err := runMulticlusterLink([]string{
@@ -314,14 +335,56 @@ func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource
 		clusterName,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating link kubernetes config: %v", err)
+	}
+
+	toKubeconfigStr, err := normalizeKubecfg(inputs["to_cluster_kubeconfig"])
+	if err != nil {
+		return nil, fmt.Errorf("couldn't normalize kubeconfig: %v", err)
+	}
+	to, err := writeKubeConfig(toKubeconfigStr)
+	defer os.Remove(to.Name())
+
+	kc := exec.Command("kubectl", "--kubeconfig", to.Name(), "apply", "-f", "-")
+	kc.Stdin = bytes.NewBuffer([]byte(config))
+	kc.Stdout = &logWriter{ctx, k.host, urn, diag.Info}
+	kc.Stderr = &logWriter{ctx, k.host, urn, diag.Warning}
+	err = kc.Run()
+	if err != nil {
+		return nil, fmt.Errorf("applying config with kubectl: %v", err)
 	}
 	return plugin.MarshalProperties(
 		resource.NewPropertyMapFromMap(map[string]interface{}{
 			"config_group_yaml":       config,
 			"from_cluster_kubeconfig": string(kubeconfigStr),
+			"to_cluster_kubeconfig":   string(toKubeconfigStr),
 			"from_cluster_name":       clusterName,
 		}),
 		plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true},
 	)
+}
+
+// unlinkOtherCluster runs kubectl to remove outdated resource
+// definitions for a multicluster link from a k8s cluster.
+func (k *linkerdLinkProvider) unlinkOtherCluster(ctx context.Context, urn resource.URN, props *structpb.Struct) error {
+	inputs, err := plugin.UnmarshalProperties(props, plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
+
+	kubeconfigStr, err := normalizeKubecfg(inputs["to_cluster_kubeconfig"])
+	if err != nil {
+		return fmt.Errorf("couldn't normalize kubeconfig: %v", err)
+	}
+	f, err := writeKubeConfig(kubeconfigStr)
+	defer os.Remove(f.Name())
+
+	config := inputs["config_group_yaml"].StringValue()
+	kc := exec.Command("kubectl", "--kubeconfig", f.Name(), "delete", "-f", "-")
+	kc.Stdin = bytes.NewBuffer([]byte(config))
+	kc.Stdout = &logWriter{ctx, k.host, urn, diag.Info}
+	kc.Stderr = &logWriter{ctx, k.host, urn, diag.Warning}
+	err = kc.Run()
+	if err != nil {
+		return fmt.Errorf("removing config with kubectl: %v", err)
+	}
+	return nil
+
 }

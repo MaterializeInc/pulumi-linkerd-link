@@ -62,8 +62,13 @@ func run(version string) error {
 							Description: "Name of the cluster whose services should be mirrored.",
 							TypeSpec:    schema.TypeSpec{Type: "string"},
 						},
+						"to_cluster_kubeconfig": {
+							Description: "Kubernetes configuration (structural) that provides access credentials to the cluster into which services get mirrored.",
+							TypeSpec:    schema.TypeSpec{Type: "string"},
+							Secret:      true,
+						},
 						"config_group_yaml": {
-							Description: "YAML output that can be applied to the destination cluster (into wich the resources should be mirrored) with k8s.yaml.ConfigGroup.",
+							Description: "YAML output that has been applied to the destination cluster with kubectl.",
 							TypeSpec:    schema.TypeSpec{Type: "string"},
 							Secret:      true,
 						},
@@ -80,6 +85,11 @@ func run(version string) error {
 					"from_cluster_name": {
 						Description: "Name of the cluster whose services should be mirrored.",
 						TypeSpec:    schema.TypeSpec{Type: "string"},
+					},
+					"to_cluster_kubeconfig": {
+						Description: "Kubernetes configuration (structural) that provides access credentials to the cluster into which services get mirrored.",
+						TypeSpec:    schema.TypeSpec{Type: "string"},
+						Secret:      true,
 					},
 				},
 				RequiredInputs: []string{"from_cluster_kubeconfig", "from_cluster_name"},

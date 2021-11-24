@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -113,12 +114,25 @@ func (k *linkerdLinkProvider) Diff(ctx context.Context, req *rpc.DiffRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	delete(olds, "repoDigest")
+	delete(olds, "config_group_yaml")
+	oldKubecfg, err := normalizeKubecfg(olds["from_cluster_kubeconfig"])
+	if err != nil {
+		return nil, fmt.Errorf("old kubeconfig is invalid: %v", err)
+	}
 
 	news, err := plugin.UnmarshalProperties(req.GetNews(), plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
 	if err != nil {
 		return nil, err
 	}
+	newKubecfg, err := normalizeKubecfg(news["from_cluster_kubeconfig"])
+	if err != nil {
+		return nil, fmt.Errorf("new kubeconfig is invalid: %v", err)
+	}
+	if bytes.Compare(oldKubecfg, newKubecfg) == 0 {
+		delete(olds, "from_cluster_kubeconfig")
+		delete(news, "from_cluster_kubeconfig")
+	}
+
 	d := olds.Diff(news)
 	if d == nil {
 		return &rpc.DiffResponse{
@@ -151,7 +165,7 @@ func (k *linkerdLinkProvider) Create(ctx context.Context, req *rpc.CreateRequest
 	}
 
 	props := req.GetProperties()
-	outputProperties, err := linkOtherCluster(props)
+	outputProperties, err := k.linkOtherCluster(ctx, urn, props)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +195,7 @@ func (k *linkerdLinkProvider) Update(ctx context.Context, req *rpc.UpdateRequest
 	}
 
 	props := req.GetNews()
-	outputProperties, err := linkOtherCluster(props)
+	outputProperties, err := k.linkOtherCluster(ctx, urn, props)
 	if err != nil {
 		return nil, err
 	}
@@ -258,42 +272,56 @@ func runMulticlusterLinkAsChild(args []string) error {
 	return cmd.Execute()
 }
 
-func linkOtherCluster(props *structpb.Struct) (*structpb.Struct, error) {
+func normalizeKubecfg(raw resource.PropertyValue) ([]byte, error) {
+	if raw.IsString() {
+		return []byte(raw.StringValue()), nil
+	} else if raw.IsObject() {
+		values := raw.ObjectValue().Mappable()
+		val, err := json.Marshal(values)
+		if err != nil {
+			return nil, fmt.Errorf("could not marshal kubecfg: %v", err)
+		}
+		return val, nil
+	}
+	return nil, fmt.Errorf("kubeconfig must be either a structure or a string, got: %v", raw.TypeString())
+}
+
+func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource.URN, props *structpb.Struct) (*structpb.Struct, error) {
 	inputs, err := plugin.UnmarshalProperties(props, plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true})
 
-	kubeconfigPath := ""
 	kubecfgRaw := inputs["from_cluster_kubeconfig"]
-	if kubecfgRaw.IsString() {
-		kubecfgRaw.StringValue()
-	} else {
-		values := kubecfgRaw.ObjectValue().MapRepl(func(in string) (string, bool) {
-			return in, true
-		}, func(pv resource.PropertyValue) (interface{}, bool) {
-			return pv, true
-		})
-		f, err := os.CreateTemp("", "kubeconfig")
-		if err != nil {
-			return nil, err
-		}
-		defer os.Remove(f.Name())
-		kubeconfigPath = f.Name()
-		enc := json.NewEncoder(f)
-		if err = enc.Encode(values); err != nil {
-			return nil, err
-		}
+	kubeconfigStr, err := normalizeKubecfg(kubecfgRaw)
+	if err != nil {
+		return nil, err
 	}
+	f, err := os.CreateTemp("", "kubeconfig")
+	if err != nil {
+		return nil, fmt.Errorf("opening temporary kubeconfig: %v", err)
+	}
+	defer os.Remove(f.Name())
+	f.Write(kubeconfigStr)
+	err = f.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	clusterName := inputs["from_cluster_name"].StringValue()
 	config, err := runMulticlusterLink([]string{
 		"--kubeconfig",
-		kubeconfigPath,
+		f.Name(),
 		"link",
 		"--cluster-name",
-		inputs["from_cluster_name"].StringValue(),
+		clusterName,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return plugin.MarshalProperties(
-		resource.NewPropertyMapFromMap(map[string]interface{}{"config_group_yaml": config}),
+		resource.NewPropertyMapFromMap(map[string]interface{}{
+			"config_group_yaml":       config,
+			"from_cluster_kubeconfig": string(kubeconfigStr),
+			"from_cluster_name":       clusterName,
+		}),
 		plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true},
 	)
 }

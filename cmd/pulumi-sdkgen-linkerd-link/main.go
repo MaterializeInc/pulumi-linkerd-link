@@ -54,8 +54,9 @@ func run(version string) error {
 					Description: "Links the services from one cluster into another cluster.",
 					Properties: map[string]schema.PropertySpec{
 						"from_cluster_kubeconfig": {
-							Description: "Kubernetes config file that provides access credentials to the cluster whose services should be mirrored.",
+							Description: "Kubernetes configuration (structural) that provides access credentials to the cluster whose services should be mirrored.",
 							TypeSpec:    schema.TypeSpec{Type: "string"},
+							Secret:      true,
 						},
 						"from_cluster_name": {
 							Description: "Name of the cluster whose services should be mirrored.",
@@ -64,6 +65,7 @@ func run(version string) error {
 						"config_group_yaml": {
 							Description: "YAML output that can be applied to the destination cluster (into wich the resources should be mirrored) with k8s.yaml.ConfigGroup.",
 							TypeSpec:    schema.TypeSpec{Type: "string"},
+							Secret:      true,
 						},
 					},
 					Required: []string{
@@ -72,7 +74,7 @@ func run(version string) error {
 				},
 				InputProperties: map[string]schema.PropertySpec{
 					"from_cluster_kubeconfig": {
-						Description: "Kubernetes config file that provides access credentials to the cluster whose services should be mirrored.",
+						Description: "Kubernetes configuration (structural) that provides access credentials to the cluster whose services should be mirrored.",
 						TypeSpec:    schema.TypeSpec{Type: "string"},
 					},
 					"from_cluster_name": {

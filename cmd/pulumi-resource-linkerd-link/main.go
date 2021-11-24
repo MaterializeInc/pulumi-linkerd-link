@@ -38,6 +38,8 @@ import (
 // Injected by linker in release builds.
 var version string
 
+var linkerdVersion = "2.11.1"
+
 var linkerdInvocationArg = "--internal-only-invoke-linkerd-cli"
 
 func main() {
@@ -284,6 +286,7 @@ func runMulticlusterLink(args []string) (string, error) {
 
 func runMulticlusterLinkAsChild(args []string) error {
 	cmd := multiclustercmd.NewCmdMulticluster()
+	os.Setenv("LINKERD_CONTAINER_VERSION_OVERRIDE", linkerdVersion)
 	cmd.SetArgs(args)
 	cmd.SetOut(os.Stderr)
 	return cmd.Execute()

@@ -38,8 +38,6 @@ import (
 // Injected by linker in release builds.
 var version string
 
-var linkerdVersion = "stable-2.11.1"
-
 var linkerdInvocationArg = "--internal-only-invoke-linkerd-cli"
 
 func main() {
@@ -117,7 +115,6 @@ func (k *linkerdLinkProvider) Diff(ctx context.Context, req *rpc.DiffRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	delete(olds, "config_group_yaml")
 	oldKubecfg, err := normalizeKubecfg(olds["from_cluster_kubeconfig"])
 	if err != nil {
 		return nil, fmt.Errorf("old from_cluster_kubeconfig is invalid: %v", err)
@@ -329,6 +326,7 @@ func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource
 	defer os.Remove(f.Name())
 
 	clusterName := inputs["from_cluster_name"].StringValue()
+	linkerdVersion := inputs["control_plane_image_version"].StringValue()
 	config, err := runMulticluster([]string{
 		"--kubeconfig",
 		f.Name(),
@@ -359,10 +357,10 @@ func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource
 	}
 	return plugin.MarshalProperties(
 		resource.NewPropertyMapFromMap(map[string]interface{}{
-			"config_group_yaml":       config,
-			"from_cluster_kubeconfig": string(kubeconfigStr),
-			"to_cluster_kubeconfig":   string(toKubeconfigStr),
-			"from_cluster_name":       clusterName,
+			"from_cluster_kubeconfig":     string(kubeconfigStr),
+			"to_cluster_kubeconfig":       string(toKubeconfigStr),
+			"from_cluster_name":           clusterName,
+			"control_plane_image_version": linkerdVersion,
 		}),
 		plugin.MarshalOptions{KeepUnknowns: true, SkipNulls: true},
 	)

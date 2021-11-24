@@ -67,14 +67,13 @@ func run(version string) error {
 							TypeSpec:    schema.TypeSpec{Type: "string"},
 							Secret:      true,
 						},
-						"config_group_yaml": {
-							Description: "YAML output that has been applied to the destination cluster with kubectl.",
+						"control_plane_image_version": {
+							Description: "Docker version tag of the linkerd control plane to install.",
 							TypeSpec:    schema.TypeSpec{Type: "string"},
-							Secret:      true,
 						},
 					},
 					Required: []string{
-						"from_cluster_kubeconfig", "from_cluster_name", "config_group_yaml",
+						"from_cluster_kubeconfig", "from_cluster_name", "control_plane_image_version",
 					},
 				},
 				InputProperties: map[string]schema.PropertySpec{
@@ -91,8 +90,12 @@ func run(version string) error {
 						TypeSpec:    schema.TypeSpec{Type: "string"},
 						Secret:      true,
 					},
+					"control_plane_image_version": {
+						Description: "Docker version tag of the linkerd control plane to install.",
+						TypeSpec:    schema.TypeSpec{Type: "string"},
+					},
 				},
-				RequiredInputs: []string{"from_cluster_kubeconfig", "from_cluster_name"},
+				RequiredInputs: []string{"from_cluster_kubeconfig", "from_cluster_name", "control_plane_image_version"},
 			},
 		},
 		Types: map[string]schema.ComplexTypeSpec{},

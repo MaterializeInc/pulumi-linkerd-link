@@ -19,7 +19,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -253,32 +252,23 @@ func (k *linkerdLinkProvider) Cancel(context.Context, *pbempty.Empty) (*pbempty.
 // runMulticluster runs this provider as a program that emulates
 // "linkerd multicluster", reading its output and reporting it as an
 // output property.
-func runMulticluster(args []string) (string, error) {
+func (k *linkerdLinkProvider) runMulticluster(ctx context.Context, urn resource.URN, args []string) (string, error) {
 	a := []string{linkerdInvocationArg}
 	a = append(a, args...)
-	cmd := exec.Command(os.Args[0], a...)
-	p, err := cmd.StdoutPipe()
+	executable, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("setting up subprocess stdout as a pipe: %v", err)
+		return "", fmt.Errorf("could not determine currently running binary: %v", err)
 	}
-	errP, err := cmd.StderrPipe()
-	if err != nil {
-		return "", fmt.Errorf("setting up subprocess stderr as a pipe: %v", err)
+	cmd := exec.Command(executable, a...)
+	var stdout bytes.Buffer
+	cmd.Stdin = &bytes.Buffer{}
+	cmd.Stdout = &stdout
+	cmd.Stderr = &logWriter{ctx, k.host, urn, diag.Warning}
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("could not run self: %v", err)
 	}
-	err = cmd.Start()
-	if err != nil {
-		return "", fmt.Errorf("re-exec'ing self: %v", err)
-	}
-	out, err := ioutil.ReadAll(p)
-	if err != nil {
-		return "", fmt.Errorf("reading linkerd multicluster output: %v", err)
-	}
-	err = cmd.Wait()
-	if err != nil {
-		stderr, _ := ioutil.ReadAll(errP)
-		return "", fmt.Errorf("running linkerd multicluster as a subcommand: %v; %v", err, string(stderr))
-	}
-	return string(out), nil
+	return string(stdout.Bytes()), nil
 }
 
 func runMulticlusterAsChild(args []string) error {
@@ -337,7 +327,7 @@ func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource
 
 	clusterName := inputs["from_cluster_name"].StringValue()
 	linkerdVersion := inputs["control_plane_image_version"].StringValue()
-	config, err := runMulticluster([]string{
+	_, err = k.runMulticluster(ctx, urn, []string{
 		"--kubeconfig",
 		f.Name(),
 		"link",
@@ -358,7 +348,7 @@ func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource
 	defer os.Remove(to.Name())
 
 	kc := exec.Command("kubectl", "--kubeconfig", to.Name(), "apply", "-f", "-")
-	kc.Stdin = bytes.NewBuffer([]byte(config))
+	kc.Stdin = &bytes.Buffer{}
 	kc.Stdout = &logWriter{ctx, k.host, urn, diag.Info}
 	kc.Stderr = &logWriter{ctx, k.host, urn, diag.Warning}
 	err = kc.Run()
@@ -389,7 +379,7 @@ func (k *linkerdLinkProvider) unlinkOtherCluster(ctx context.Context, urn resour
 	defer os.Remove(f.Name())
 
 	clusterName := inputs["from_cluster_name"].StringValue()
-	config, err := runMulticluster([]string{
+	config, err := k.runMulticluster(ctx, urn, []string{
 		"--kubeconfig",
 		f.Name(), // counter-intuitively, here we need the *destination* kubecfg.
 		"unlink",

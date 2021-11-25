@@ -327,7 +327,7 @@ func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource
 
 	clusterName := inputs["from_cluster_name"].StringValue()
 	linkerdVersion := inputs["control_plane_image_version"].StringValue()
-	_, err = k.runMulticluster(ctx, urn, []string{
+	config, err := k.runMulticluster(ctx, urn, []string{
 		"--kubeconfig",
 		f.Name(),
 		"link",
@@ -348,7 +348,7 @@ func (k *linkerdLinkProvider) linkOtherCluster(ctx context.Context, urn resource
 	defer os.Remove(to.Name())
 
 	kc := exec.Command("kubectl", "--kubeconfig", to.Name(), "apply", "-f", "-")
-	kc.Stdin = &bytes.Buffer{}
+	kc.Stdin = bytes.NewBuffer([]byte(config))
 	kc.Stdout = &logWriter{ctx, k.host, urn, diag.Info}
 	kc.Stderr = &logWriter{ctx, k.host, urn, diag.Warning}
 	err = kc.Run()

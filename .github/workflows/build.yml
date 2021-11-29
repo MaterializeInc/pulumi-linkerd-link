@@ -2,10 +2,10 @@ name: goreleaser
 
 on:
   push:
-    tags: ["*"]
+    branches:
 
 jobs:
-  goreleaser:
+  goreleaser-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -21,13 +21,4 @@ jobs:
         with:
           distribution: goreleaser
           version: latest
-          args: release --rm-dist
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: make python-sdk
-      - run: python setup.py build sdist
-        working-directory: sdk/python
-      - uses: pypa/gh-action-pypi-publish@master
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          packages_dir: sdk/python/dist/
+          args: build --skip-validate --rm-dist

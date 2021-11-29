@@ -20,5 +20,12 @@ linkerd2: gen
 .PHONY: install dev linkerd2
 dev: python-sdk bin/pulumi-resource-linkerd-link
 
+dev-from-tmpdir: python-sdk # build the provider such that any non-embedded files are obvious
+	TMPD=`mktemp -d` ; \
+	cp -Rp `pwd`/. $$TMPD && \
+	make -C $$TMPD bin/pulumi-resource-linkerd-link && \
+	cp $$TMPD/bin/pulumi-resource-linkerd-link ./bin && \
+	rm -rf $$TMPD
+
 install:
 	go install ./cmd/pulumi-resource-linkerd-link

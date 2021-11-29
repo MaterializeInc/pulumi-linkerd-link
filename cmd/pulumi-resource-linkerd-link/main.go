@@ -23,8 +23,8 @@ import (
 	"os"
 	"os/exec"
 
+	multiclustercmd "github.com/MaterializeInc/pulumi-linkerd-link/linkerd2/multicluster/cmd"
 	pbempty "github.com/golang/protobuf/ptypes/empty"
-	multiclustercmd "github.com/linkerd/linkerd2/multicluster/cmd"
 	"github.com/pulumi/pulumi/pkg/v3/resource/provider"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/diag"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"

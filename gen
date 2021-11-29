@@ -1,0 +1,29 @@
+#!/bin/bash
+
+## Check out the code forklifted from the linkerd2 repo, and patch it
+## to support being fork-lifted. We sadly have to do this to support
+## embedding the kinds of YAML files that the linkerd2 CLI builds into
+## their binaries via codegen (which isn't supported in external go
+## modules).
+
+LINKERD_VERSION="stable-2.11.1"
+
+set -eux -o pipefail
+
+repo_base="$(cd "$(dirname "$0")"; pwd)"
+
+cd "$repo_base"
+rm -rf linkerd2
+git clone \
+  --depth 1  \
+  --filter=blob:none  \
+  --sparse \
+  --branch "$LINKERD_VERSION" \
+  https://github.com/linkerd/linkerd2 ; \
+  (cd linkerd2 ; git sparse-checkout set multicluster)
+
+# Patch up module references:
+find linkerd2 -type f -name \*.go -print0 | xargs -n1 -0 sed -i "" -e "s#github.com/linkerd/linkerd2/multicluster#github.com/MaterializeInc/pulumi-linkerd-link/linkerd2/multicluster#i"
+
+# Generate code that linkerd2 needs
+go generate -v ./linkerd2/multicluster/static

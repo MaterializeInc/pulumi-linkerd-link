@@ -13,5 +13,7 @@ builds:
     binary: pulumi-resource-linkerd-link
     ldflags:
       - -X main.version={{.Tag}}
+    hooks:
+      pre: ./gen
 changelog:
   skip: true

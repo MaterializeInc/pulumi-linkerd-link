@@ -23,7 +23,7 @@ git clone \
 
 # Patch up module references:
 find linkerd2 -type f \( -name \*.go -or -name go.mod \)  -print0 | \
-    xargs -n1 -0 sed -i "" \
+    xargs -n1 -0 sed -i.bak \
           -e 's#github.com/linkerd/linkerd2\([ "/]\)#github.com/MaterializeInc/pulumi-linkerd-link/linkerd2\1#i' \
           -e 's#github.com/linkerd/linkerd2$#github.com/MaterializeInc/pulumi-linkerd-link/linkerd2#'
 

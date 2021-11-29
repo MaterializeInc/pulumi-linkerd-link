@@ -1,4 +1,4 @@
-module github.com/antifuchs/pulumi-linkerd-link
+module github.com/MaterializeInc/pulumi-linkerd-link
 
 go 1.16
 

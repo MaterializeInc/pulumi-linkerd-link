@@ -3,3 +3,4 @@ sdk
 __pycache__
 venv
 /linkerd2
+/dist
